@@ -1,0 +1,13 @@
+# Local primer lists and sequence data
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.tsv
+*.fasta
+*.fa
+*.fna
+*.gb
+*.gbk
+.DS_Store
+Thumbs.db
