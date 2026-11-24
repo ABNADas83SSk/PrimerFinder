@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Primer Finder</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f0f5f4;color:#163c38;font:16px/1.65 system-ui,sans-serif}main{width:min(100%,680px);padding:clamp(24px,5vw,48px);border:1px solid #d7e6e1;border-radius:24px;background:white}h1{font-size:clamp(36px,8vw,56px);letter-spacing:-.045em;margin:.1em 0}.tag{font-size:12px;letter-spacing:.16em;color:#357a68}.buttons{display:flex;flex-wrap:wrap;gap:12px;margin:28px 0}a.button{padding:13px 24px;border-radius:10px;background:#146651;color:white;text-decoration:none;font-weight:600}.note{font-size:14px;color:#4b6368}footer{border-top:1px solid #dfebe7;margin-top:28px;padding-top:18px;font-size:13px}a{color:#146651}a:focus-visible{outline:3px solid #469e89;outline-offset:4px}
+</style>
+</head>
+<body><main>
+<div class="tag">LOCAL DNA SEARCH</div>
+<h1>Primer Finder</h1>
+<p>DNA配列から、手元のリストにあるプライマーを検索。</p>
+<p lang="en">Find primers in your local list using exact matches or a configurable mismatch limit.</p>
+<nav class="buttons" aria-label="Language / 言語">
+<a class="button" href="PrimerFinder.html" lang="ja">日本語で使う</a>
+<a class="button" href="PrimerFinder_en.html" lang="en">Use in English</a>
+</nav>
+<p class="note">Excelを選択して検索します。配列の処理は端末のブラウザ内で実行します。</p>
+<p class="note" lang="en">Select a local Excel file to begin. Sequence processing runs in your browser.</p>
+<footer>Created by Akira Yoshinari with ChatGPT.<br>
+<a href="https://github.com/ABNADas83SSk/PrimerFinder">GitHub &amp; documentation</a>
+</footer>
+</main></body></html>
