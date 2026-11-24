@@ -1,5 +1,9 @@
 # Primer Finder
 
+日本語 · [English](README.en.md)
+
+日本語版は `PrimerFinder.html`、英語版は `PrimerFinder_en.html` を開く。
+
 Akira YoshinariがChatGPTを用いて作成した、ローカルブラウザで動作するプライマー検索ツール。
 
 ## 使い方
