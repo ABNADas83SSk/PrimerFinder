@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Primer Finder</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f0f5f4;color:#162e34;font:16px/1.55 system-ui,sans-serif}main{max-width:1000px;margin:auto;padding:36px 20px 64px}header{border-radius:22px;background:#103938;color:#fff;padding:30px}h1{margin:0;font-size:clamp(28px,6vw,45px);letter-spacing:-.04em}header p{margin:.4em 0 0;color:#d4ebe6}.tag{font-size:12px;letter-spacing:.16em;color:#a9e4d4}section{margin-top:16px;background:white;border:1px solid #d9e6e3;border-radius:16px;padding:22px}h2{font-size:19px;margin:0 0 9px}p{margin:.55em 0}.hint{color:#4b6368;font-size:14px}.controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{border:1px solid #b4cdca;border-radius:9px;background:#fff;color:#173f3d;padding:9px 14px;cursor:pointer;font:inherit}button.primary{background:#146651;color:white;border-color:#146651}button:disabled{opacity:.45;cursor:default}button:focus-visible,textarea:focus-visible{outline:3px solid #469e89;outline-offset:2px}textarea{width:100%;resize:vertical;border:1px solid #b4cdca;border-radius:9px;padding:12px;font:15px/1.5 ui-monospace,monospace;color:inherit}.status{font-size:14px;overflow-wrap:anywhere}.error{color:#a12e25}.table{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:9px;border-bottom:1px solid #e2ebe8;vertical-align:top}th{white-space:nowrap;background:#f0f7f4}code{overflow-wrap:anywhere}mark{background:#cbf0d8;color:#154c35;font-weight:700}summary{cursor:pointer} [hidden]{display:none!important}
+.settings{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:10px 0}.settings select,.settings input{font:inherit;color:inherit;background:white;border:1px solid #b4cdca;border-radius:7px;padding:5px 8px}.settings input{width:6em}.mismatch{background:#ffdfba;color:#852e12;text-decoration:underline}
+</style>
+</head>
+<body><main>
+<header><div class="tag">LOCAL DNA SEARCH</div><h1>Primer Finder</h1><p>Find primers matching your DNA sequence in a shared primer list.</p></header>
+<section>
+<h2>1. Primer list</h2>
+<p class="hint">Use the first worksheet in an Excel (.xlsx) file. Column A contains IDs; column C contains primer sequences (5′→3′).</p>
+<div class="controls"><button id="folder" class="primary">Connect shared folder</button><button id="reload" hidden>Refresh now</button><button id="manual">Select Excel file</button><input id="file" type="file" accept=".xlsx" hidden></div>
+<p id="sourceStatus" class="status" role="status">No primer list connected</p>
+<details class="hint"><summary>Using Dropbox</summary><ol><li>Place this HTML file and <code>primers.xlsx</code> in the same shared folder. Make the folder available offline on each computer.</li><li>Open the HTML file from Finder or File Explorer in Chrome or Edge, then select the shared folder each time you open the app.</li><li>Save the updated Excel file with the same filename. While this page is open, changes are loaded after Dropbox syncs them to your computer. If folder access is unavailable, select the Excel file again after an update.</li></ol></details>
+</section>
+<section>
+<h2><label for="query">2. DNA sequence to search</label></h2>
+<textarea id="query" rows="7" placeholder="Paste a DNA sequence or a single FASTA record" spellcheck="false" autocomplete="off"></textarea>
+<div class="settings">
+<label for="mode">Search mode</label>
+<select id="mode"><option value="exact">Exact match</option><option value="approximate">Allow mismatches</option></select>
+<label id="toleranceLabel" hidden>Maximum <input id="tolerance" type="number" min="0" step="1" value="1" inputmode="numeric" aria-label="Maximum mismatches"> bp</label>
+</div>
+<p class="hint">空白・改行を除き、プライマー全長を両方向で比較します。Allow mismatchesは指定数以下の塩基置換が対象です（挿入・欠失なし）。曖昧塩基は文字どおりに比較します。</p>
+<div class="controls"><button id="search" class="primary" disabled>Search</button><button id="clear">Clear</button></div>
+<p id="queryStatus" class="status" role="status"></p>
+</section>
+<section id="output" hidden>
+<h2 id="count"></h2>
+<p class="hint">Coordinates are 1-based and include both endpoints. Flanking sequences follow the orientation of the input sequence. Mismatched bases are underlined.</p>
+<div class="table"><table><thead><tr><th>ID</th><th>Primer 5′→3′</th><th>Strand</th><th>Position (bp)</th><th>Mismatches (bp)</th><th>Sequence context</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section></main>
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+const normalize = value => value.replace(/\s/g, "").toUpperCase();
+const dna = /^[ACGTRYSWKMBDHVN]+$/;
+const complement = Object.fromEntries(Array.from("ACGTRYSWKMBDHVN", (base, i) => [base, "TGCAYRSWMKVHDBN"[i]]));
+const reverseComplement = seq => Array.from(seq, base => complement[base]).reverse().join("");
+const localName = "primers.xlsx";
+const maxWorkbookBytes = 30 * 1024 * 1024;
+
+async function workbookEntries(file) {
+  if (!file.size || file.size > maxWorkbookBytes) throw new Error("The Excel file is empty or larger than 30 MB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const view = new DataView(bytes.buffer);
+  const u16 = i => view.getUint16(i, true);
+  const u32 = i => view.getUint32(i, true);
+  const decoder = new TextDecoder();
+  let end = bytes.length - 22;
+  while (end >= Math.max(0, bytes.length - 65557)) {
+    if (u32(end) === 0x06054b50 && end + 22 + u16(end + 20) === bytes.length) break;
+    end--;
+  }
+  if (end < Math.max(0, bytes.length - 65557)) throw new Error("Select a standard, unencrypted .xlsx file.");
+  const entries = new Map();
+  let offset = u32(end + 16);
+  for (let i = 0; i < u16(end + 10); i++) {
+    if (u32(offset) !== 0x02014b50) throw new Error("Unable to read the Excel file structure.");
+    const length = u16(offset + 28);
+    const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + length));
+    entries.set(name, {
+      flags: u16(offset + 8), method: u16(offset + 10), size: u32(offset + 20),
+      expanded: u32(offset + 24), start: u32(offset + 42)
+    });
+    offset += 46 + length + u16(offset + 30) + u16(offset + 32);
+  }
+  return async (name, optional = false) => {
+    const entry = entries.get(name);
+    if (!entry && optional) return null;
+    if (!entry) throw new Error("Required data is missing from the Excel file.");
+    if (entry.flags & 1 || entry.expanded > 60 * 1024 * 1024 || u32(entry.start) !== 0x04034b50) {
+      throw new Error("The workbook is encrypted, damaged, or too large when decompressed.");
+    }
+    const start = entry.start + 30 + u16(entry.start + 26) + u16(entry.start + 28);
+    if (start + entry.size > bytes.length) throw new Error("The Excel file is truncated.");
+    let data = bytes.subarray(start, start + entry.size);
+    if (entry.method === 8) {
+      const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      const reader = stream.getReader();
+      const chunks = [];
+      let size = 0;
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > entry.expanded) {
+          await reader.cancel();
+          throw new Error("The decompressed size of the Excel data does not match.");
+        }
+        chunks.push(value);
+      }
+      data = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    } else if (entry.method !== 0) {
+      throw new Error("This compression method is not supported.");
+    }
+    if (data.length !== entry.expanded) throw new Error("The decompressed size of the Excel data does not match.");
+    const doc = new DOMParser().parseFromString(decoder.decode(data), "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) throw new Error("Unable to read the workbook XML.");
+    return doc;
+  };
+}
+
+const elements = (node, name) => Array.from(node?.getElementsByTagNameNS("*", name) ?? []);
+const child = (node, name) => Array.from(node?.children ?? []).find(item => item.localName === name);
+const cellText = node => Array.from(node?.children ?? []).map(item => {
+  if (item.localName === "t") return item.textContent;
+  return item.localName === "r" ? (child(item, "t")?.textContent ?? "") : "";
+}).join("");
+
+function partPath(base, target) {
+  const url = new URL(target, "https://workbook.invalid/" + base);
+  if (url.origin !== "https://workbook.invalid") throw new Error("Externally referenced worksheets are not supported.");
+  return decodeURIComponent(url.pathname.slice(1));
+}
+
+async function readPrimers(file) {
+  const read = await workbookEntries(file);
+  const root = elements(await read("_rels/.rels"), "Relationship");
+  const book = root.find(rel => rel.getAttribute("Type")?.endsWith("/officeDocument"));
+  if (!book) throw new Error("The Excel workbook could not be found.");
+  const bookPath = partPath("", book.getAttribute("Target"));
+  const slash = bookPath.lastIndexOf("/");
+  const relationPath = bookPath.slice(0, slash + 1) + "_rels/" + bookPath.slice(slash + 1) + ".rels";
+  const relations = elements(await read(relationPath), "Relationship");
+  const first = elements(await read(bookPath), "sheet")[0];
+  const id = Array.from(first?.attributes ?? []).find(attr => attr.localName === "id")?.value;
+  const sheet = relations.find(rel => rel.getAttribute("Id") === id);
+  if (!sheet || !sheet.getAttribute("Type")?.endsWith("/worksheet")) {
+    throw new Error("The first sheet is not a worksheet.");
+  }
+  const strings = relations.find(rel => rel.getAttribute("Type")?.endsWith("/sharedStrings"));
+  const shared = strings ? elements(await read(partPath(bookPath, strings.getAttribute("Target"))), "si").map(cellText) : [];
+  const getValue = cell => {
+    const raw = child(cell, "v")?.textContent ?? "";
+    switch (cell?.getAttribute("t")) {
+      case "s": return raw === "" ? "" : (shared[Number(raw)] ?? "");
+      case "inlineStr": return cellText(child(cell, "is"));
+      case "e": return "";
+      default: return raw;
+    }
+  };
+  const doc = await read(partPath(bookPath, sheet.getAttribute("Target")));
+  const primers = [];
+  let skipped = 0;
+  for (const row of elements(doc, "row")) {
+    const cells = Array.from(row.children);
+    const findCell = column => cells.find(cell => new RegExp("^" + column + "[0-9]+$").test(cell.getAttribute("r")));
+    const primer = normalize(getValue(findCell("C")));
+    if (!primer) continue;
+    if (!dna.test(primer)) {
+      skipped++;
+      continue;
+    }
+    primers.push({id: getValue(findCell("A")) ||  "Row " + row.getAttribute("r"), primer, rc: reverseComplement(primer)});
+  }
+  if (!primers.length) throw new Error("No valid DNA sequences were found in column C of the first worksheet.");
+  return {primers, skipped, sheet: first.getAttribute("name")};
+}
+
+let directory = null;
+let database = null;
+let fingerprint = "";
+let busy = false;
+let lastQuery = null;
+
+function setSource(message, error = false) {
+  $("sourceStatus").textContent = message;
+  $("sourceStatus").classList.toggle("error", error);
+}
+
+function readQuery(value) {
+  const lines = value.trim().split(/\r\n|\r|\n/);
+  if (lines[0].startsWith(">")) lines.shift();
+  if (lines.some(line => line.trimStart().startsWith(">"))) throw new Error("Search one FASTA record at a time.");
+  const seq = normalize(lines.join(""));
+  if (!dna.test(seq)) throw new Error("Enter a DNA sequence using ACGTRYSWKMBDHVN.");
+  return seq;
+}
+
+function findMatches(query, primers, maxMismatches, limit = 5000) {
+  const matches = [];
+  let total = 0;
+  for (const entry of primers) {
+    const directions = entry.primer === entry.rc ? [["±", entry.primer]] : [["+", entry.primer], ["−", entry.rc]];
+    for (const [strand, target] of directions) {
+      const record = (start, mismatches) => {
+        total++;
+        if (matches.length < limit) {
+          matches.push({...entry, strand, target, start, end: start + target.length, mismatches});
+        }
+      };
+      if (maxMismatches === 0) {
+        for (let start = query.indexOf(target); start !== -1; start = query.indexOf(target, start + 1)) {
+          record(start, 0);
+        }
+        continue;
+      }
+      for (let start = 0; start <= query.length - target.length; start++) {
+        let mismatches = 0;
+        for (let offset = 0; offset < target.length; offset++) {
+          if (query[start + offset] !== target[offset] && ++mismatches > maxMismatches) break;
+        }
+        if (mismatches <= maxMismatches) record(start, mismatches);
+      }
+    }
+  }
+  return {matches, total};
+}
+
+function render(query, maxMismatches) {
+  const {matches, total} = findMatches(query, database.primers, maxMismatches);
+  const rows = document.createDocumentFragment();
+  for (const hit of matches) {
+    const row = document.createElement("tr");
+    for (const value of [hit.id, hit.primer, hit.strand, (hit.start + 1) + "–" + hit.end, hit.mismatches]) {
+      const cell = row.insertCell();
+      cell.textContent = value;
+    }
+    const context = document.createElement("code");
+    const mark = document.createElement("mark");
+    let segmentStart = hit.start;
+    for (let pos = hit.start; hit.mismatches && pos < hit.end; pos++) {
+      const expected = hit.target[pos - hit.start];
+      if (query[pos] === expected) continue;
+      mark.append(query.slice(segmentStart, pos));
+      const base = document.createElement("span");
+      base.className = "mismatch";
+      base.title = (pos + 1) + " bp | Input " + query[pos] + " / Expected " + expected;
+      base.textContent = query[pos];
+      mark.append(base);
+      segmentStart = pos + 1;
+    }
+    mark.append(query.slice(segmentStart, hit.end));
+    context.append(query.slice(Math.max(0, hit.start - 10), hit.start), mark, query.slice(hit.end, hit.end + 10));
+    row.insertCell().append(context);
+    rows.append(row);
+  }
+  $("rows").replaceChildren(rows);
+  $("count").textContent = total.toLocaleString() + " matches" + (total > matches.length ? " (showing the first 5,000)" : "");
+  $("output").hidden = false;
+}
+
+async function refresh(manualFile = null) {
+  if (busy || (!directory && !manualFile)) return;
+  busy = true;
+  $("folder").disabled = $("manual").disabled = $("reload").disabled = $("search").disabled = true;
+  try {
+    const file = manualFile ?? await (await directory.getFileHandle(localName)).getFile();
+    const key = file.name + "|" + file.lastModified + "|" + file.size;
+    if (!database || manualFile || key !== fingerprint) {
+      database = await readPrimers(file);
+      fingerprint = key;
+    }
+    const count = database.primers.length.toLocaleString();
+    const skipped = database.skipped ? " / Non-DNA rows skipped (including headers): " + database.skipped + "" : "";
+    setSource((directory ? "Auto-refresh active" : "Manually loaded") + " ｜ " + file.name + " ／ " + database.sheet + " ／ " +
+      count + " primers" + skipped + " / File modified " + new Date(file.lastModified).toLocaleString("en-US"));
+    if (lastQuery && (manualFile || lastQuery.database !== database || $("output").hidden)) {
+      render(lastQuery.query, lastQuery.maxMismatches);
+      lastQuery.database = database;
+    }
+  } catch (error) {
+    database = null;
+    fingerprint = "";
+    $("output").hidden = true;
+    $("rows").replaceChildren();
+    const message = error.name === "NotFoundError" ? "Could not find " + localName + " in the shared folder." : error.message;
+    setSource("Failed to load. " + message, true);
+  } finally {
+    busy = false;
+    $("folder").disabled = !window.showDirectoryPicker;
+    $("manual").disabled = $("reload").disabled = false;
+    $("search").disabled = !database;
+  }
+}
+
+$("folder").onclick = async () => {
+  if (busy) return;
+  try {
+    directory = await window.showDirectoryPicker({id: "primer-finder-source", mode: "read"});
+    fingerprint = "";
+    $("reload").hidden = false;
+    await refresh();
+  } catch (error) {
+    if (error.name !== "AbortError") setSource("Unable to open the folder. You can select the Excel file directly. " + error.message, true);
+  }
+};
+$("manual").onclick = () => $("file").click();
+$("file").onchange = async event => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file || busy) return;
+  directory = null;
+  $("reload").hidden = true;
+  await refresh(file);
+};
+$("reload").onclick = () => {
+  if (busy) return;
+  fingerprint = "";
+  void refresh();
+};
+$("search").onclick = async () => {
+  if (busy) return;
+  $("queryStatus").textContent = "";
+  $("queryStatus").classList.remove("error");
+  lastQuery = null;
+  $("output").hidden = true;
+  $("rows").replaceChildren();
+  try {
+    const input = $("query").value;
+    const query = readQuery(input);
+    const mode = $("mode").value;
+    const tolerance = $("tolerance").value;
+    const maxMismatches = mode === "exact" ? 0 : $("tolerance").valueAsNumber;
+    if (!Number.isSafeInteger(maxMismatches) || maxMismatches < 0) {
+      throw new Error("Maximum mismatchesは0以上の整数で指定してください。");
+    }
+    if (directory) await refresh();
+    if (!database || $("query").value !== input || $("mode").value !== mode ||
+        (mode !== "exact" && $("tolerance").value !== tolerance)) return;
+    render(query, maxMismatches);
+    lastQuery = {query, maxMismatches, database};
+    $("queryStatus").textContent = query.length.toLocaleString() + " bp searched.";
+  } catch (error) {
+    $("queryStatus").textContent = error.message;
+    $("queryStatus").classList.add("error");
+  }
+};
+$("query").oninput = () => {
+  lastQuery = null;
+  $("output").hidden = true;
+  $("rows").replaceChildren();
+  $("queryStatus").textContent = "";
+};
+$("mode").onchange = () => {
+  $("toleranceLabel").hidden = $("mode").value === "exact";
+  $("query").oninput();
+};
+$("tolerance").oninput = $("query").oninput;
+$("clear").onclick = () => {
+  $("query").value = "";
+  $("query").oninput();
+  $("query").focus();
+};
+if (!window.showDirectoryPicker) {
+  $("folder").disabled = true;
+  setSource("Folder auto-refresh is unavailable in this environment. Select the Excel file directly.");
+}
+setInterval(() => void refresh(), 5000);
+window.addEventListener("focus", () => void refresh());
+</script>
+</body>
+</html>
