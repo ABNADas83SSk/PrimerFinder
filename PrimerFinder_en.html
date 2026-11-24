@@ -27,7 +27,7 @@
 <select id="mode"><option value="exact">Exact match</option><option value="approximate">Allow mismatches</option></select>
 <label id="toleranceLabel" hidden>Maximum <input id="tolerance" type="number" min="0" step="1" value="1" inputmode="numeric" aria-label="Maximum mismatches"> bp</label>
 </div>
-<p class="hint">空白・改行を除き、プライマー全長を両方向で比較します。Allow mismatchesは指定数以下の塩基置換が対象です（挿入・欠失なし）。曖昧塩基は文字どおりに比較します。</p>
+<p class="hint">Whitespace is ignored. Full-length primers are compared in both orientations. Allow mismatches finds matches with up to the specified number of substitutions (no insertions or deletions). Ambiguous bases are compared literally.</p>
 <div class="controls"><button id="search" class="primary" disabled>Search</button><button id="clear">Clear</button></div>
 <p id="queryStatus" class="status" role="status"></p>
 </section>
@@ -321,7 +321,7 @@ $("search").onclick = async () => {
     const tolerance = $("tolerance").value;
     const maxMismatches = mode === "exact" ? 0 : $("tolerance").valueAsNumber;
     if (!Number.isSafeInteger(maxMismatches) || maxMismatches < 0) {
-      throw new Error("Maximum mismatchesは0以上の整数で指定してください。");
+      throw new Error("Maximum mismatches must be a nonnegative integer.");
     }
     if (directory) await refresh();
     if (!database || $("query").value !== input || $("mode").value !== mode ||
